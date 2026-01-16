@@ -3,15 +3,25 @@ import html
 import os
 from typing import List, Dict
 
-import requests
 import streamlit as st
 import streamlit.components.v1 as components
+from langchain_ollama import ChatOllama
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 
 APP_TITLE = "ETERNUM"
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma3:4b")
 LOGO_PATH = os.path.join("assets", "logo.png")
+SYSTEM_PROMPT = (
+    "Eres un asistente de conversacion. Responde de forma natural, clara y empatica."
+)
+INITIAL_ASSISTANT_MESSAGE = (
+    "Hola soy Eternum, un asistente que te ayuda a guardar recuerdos o revivirlos "
+    "\N{INVERTED QUESTION MARK}quieres guardar recuerdos o rememorar alguno?"
+)
+CHAT_ICON = "\N{SPEECH BALLOON}"
+VOICE_ICON = "\N{MICROPHONE}"
 
 
 def load_logo_data_uri(path: str) -> str:
@@ -51,13 +61,24 @@ def build_messages_html(messages: List[Dict[str, str]], thinking: bool = False) 
     return "\n".join(parts)
 
 
-def ollama_chat(messages: List[Dict[str, str]], model: str) -> str:
-    url = f"{OLLAMA_HOST}/api/chat"
-    payload = {"model": model, "messages": messages, "stream": False}
-    response = requests.post(url, json=payload, timeout=120)
-    response.raise_for_status()
-    data = response.json()
-    return data.get("message", {}).get("content", "").strip()
+def build_langchain_messages(messages: List[Dict[str, str]]) -> List:
+    converted = []
+    for message in messages:
+        role = message.get("role", "assistant")
+        content = message.get("content", "")
+        if role == "system":
+            converted.append(SystemMessage(content=content))
+        elif role == "user":
+            converted.append(HumanMessage(content=content))
+        else:
+            converted.append(AIMessage(content=content))
+    return converted
+
+
+def ollama_chat(messages: List[Dict[str, str]], model: str, base_url: str) -> str:
+    chat_model = ChatOllama(model=model, base_url=base_url)
+    response = chat_model.invoke(build_langchain_messages(messages))
+    return response.content.strip()
 
 
 def scroll_chat_to_bottom() -> None:
@@ -65,14 +86,31 @@ def scroll_chat_to_bottom() -> None:
         """
 <script>
 const parentDoc = window.parent.document;
-const runScroll = () => {
+const attachAutoScroll = () => {
   const chat = parentDoc.querySelector(".chat-window");
-  if (chat) {
+  if (!chat) {
+    return false;
+  }
+  const scrollToBottom = () => {
     chat.scrollTop = chat.scrollHeight;
+  };
+  if (chat.dataset.autoscrollAttached === "true") {
+    scrollToBottom();
+    return true;
+  }
+  chat.dataset.autoscrollAttached = "true";
+  scrollToBottom();
+  const observer = new MutationObserver(scrollToBottom);
+  observer.observe(chat, { childList: true, subtree: true });
+  window.addEventListener("resize", scrollToBottom);
+  return true;
+};
+const tryAttach = () => {
+  if (!attachAutoScroll()) {
+    requestAnimationFrame(tryAttach);
   }
 };
-requestAnimationFrame(runScroll);
-setTimeout(runScroll, 120);
+tryAttach();
 </script>
 """,
         height=0,
@@ -149,7 +187,7 @@ div[data-testid="stHorizontalBlock"]:nth-of-type(1) > div[data-testid="column"]:
   border: 1px solid var(--panel-border);
   border-radius: 16px;
   padding: 18px 16px;
-  min-height: 60vh;
+  min-height: 68vh;
 }
 
 div[data-testid="stHorizontalBlock"]:nth-of-type(1) > div[data-testid="column"]:nth-child(2) {
@@ -157,7 +195,7 @@ div[data-testid="stHorizontalBlock"]:nth-of-type(1) > div[data-testid="column"]:
   border: 1px solid var(--panel-border);
   border-radius: 16px;
   padding: 18px 20px 22px 20px;
-  min-height: 60vh;
+  min-height: 68vh;
 }
 
 .stButton > button {
@@ -218,8 +256,8 @@ button[title="Send message"]:active {
   border-radius: 16px;
   background: rgba(12, 13, 18, 0.85);
   padding: 18px;
-  min-height: 46vh;
-  max-height: 56vh;
+  min-height: 60vh;
+  max-height: 70vh;
   overflow-y: auto;
   scroll-behavior: smooth;
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03);
@@ -256,7 +294,7 @@ button[title="Send message"]:active {
   border: 1px solid var(--panel-border);
   border-radius: 12px;
   padding: 12px 14px;
-  max-width: 86%;
+  max-width: 92%;
   line-height: 1.5;
 }
 
@@ -346,60 +384,76 @@ st.markdown(
 )
 
 if "messages" not in st.session_state:
-    st.session_state.messages = []
+    st.session_state.messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "assistant", "content": INITIAL_ASSISTANT_MESSAGE},
+    ]
 
 if "mode" not in st.session_state:
-    st.session_state.mode = "idle"
+    st.session_state.mode = "chat"
 
-left_col, right_col = st.columns([1, 3], gap="small")
+left_col, right_col = st.columns([1, 4], gap="small")
 
 with left_col:
-    if st.button("Grabar recuerdo", key="record", help="Record memory"):
-        st.session_state.mode = "record"
-    if st.button("Revivir recuerdos", key="recall", help="Recall memories"):
-        st.session_state.mode = "recall"
+    if st.button(f"{CHAT_ICON} Modo chat", key="chat", help="Modo chat"):
+        st.session_state.mode = "chat"
+    if st.button(f"{VOICE_ICON} Modo voz", key="voice", help="Modo voz"):
+        st.session_state.mode = "voice"
     st.markdown(
-        f'<div class="mode-pill">Mode: {st.session_state.mode}</div>',
+        f'<div class="mode-pill">Modo: {st.session_state.mode}</div>',
         unsafe_allow_html=True,
     )
 
 with right_col:
-    chat_placeholder = st.empty()
-    chat_placeholder.markdown(
-        build_messages_html(st.session_state.messages),
-        unsafe_allow_html=True,
-    )
-    scroll_chat_to_bottom()
-
-    with st.form("chat-form", clear_on_submit=True):
-        input_col, send_col = st.columns([8, 1], gap="small")
-        with input_col:
-            user_text = st.text_input(
-                "Message",
-                placeholder="Type your message",
-                label_visibility="collapsed",
+    if st.session_state.mode == "voice":
+        center_col = st.columns([1, 2, 1], gap="small")[1]
+        with center_col:
+            st.button(
+                f"{VOICE_ICON} Grabar mensaje de voz",
+                key="voice-record",
+                help="Grabar mensaje de voz",
             )
-        with send_col:
-            send_clicked = st.form_submit_button("Send", help="Send message")
-
-    if send_clicked and user_text.strip():
-        st.session_state.messages.append({"role": "user", "content": user_text.strip()})
-        chat_placeholder.markdown(
-            build_messages_html(st.session_state.messages, thinking=True),
-            unsafe_allow_html=True,
-        )
-        scroll_chat_to_bottom()
-        with st.spinner("Pensando..."):
-            try:
-                reply = ollama_chat(st.session_state.messages, OLLAMA_MODEL)
-            except requests.RequestException as exc:
-                reply = (
-                    "Unable to reach Ollama at "
-                    f"{OLLAMA_HOST}. Is it running? Details: {exc}"
-                )
-        st.session_state.messages.append({"role": "assistant", "content": reply})
+    else:
+        chat_placeholder = st.empty()
         chat_placeholder.markdown(
             build_messages_html(st.session_state.messages),
             unsafe_allow_html=True,
         )
         scroll_chat_to_bottom()
+
+        with st.form("chat-form", clear_on_submit=True):
+            input_col, send_col = st.columns([8, 1], gap="small")
+            with input_col:
+                user_text = st.text_input(
+                    "Message",
+                    placeholder="Type your message",
+                    label_visibility="collapsed",
+                )
+            with send_col:
+                send_clicked = st.form_submit_button("Send", help="Send message")
+
+        if send_clicked and user_text.strip():
+            st.session_state.messages.append(
+                {"role": "user", "content": user_text.strip()}
+            )
+            chat_placeholder.markdown(
+                build_messages_html(st.session_state.messages, thinking=True),
+                unsafe_allow_html=True,
+            )
+            scroll_chat_to_bottom()
+            with st.spinner("Pensando..."):
+                try:
+                    reply = ollama_chat(
+                        st.session_state.messages, OLLAMA_MODEL, OLLAMA_HOST
+                    )
+                except Exception as exc:
+                    reply = (
+                        "Unable to reach Ollama at "
+                        f"{OLLAMA_HOST}. Is it running? Details: {exc}"
+                    )
+            st.session_state.messages.append({"role": "assistant", "content": reply})
+            chat_placeholder.markdown(
+                build_messages_html(st.session_state.messages),
+                unsafe_allow_html=True,
+            )
+            scroll_chat_to_bottom()
