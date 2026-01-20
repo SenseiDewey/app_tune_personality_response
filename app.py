@@ -5,21 +5,14 @@ from typing import List, Dict
 
 import streamlit as st
 import streamlit.components.v1 as components
-from langchain_ollama import ChatOllama
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+
+from backend.config import get_settings
+from backend.memory_agent import build_memory_graph, run_chat
+from backend.prompts import INITIAL_ASSISTANT_MESSAGE, SYSTEM_CHAT_PROMPT
 
 
 APP_TITLE = "ETERNUM"
-OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma3:4b")
 LOGO_PATH = os.path.join("assets", "logo.png")
-SYSTEM_PROMPT = (
-    "Eres un asistente de conversacion. Responde de forma natural, clara y empatica."
-)
-INITIAL_ASSISTANT_MESSAGE = (
-    "Hola soy Eternum, un asistente que te ayuda a guardar recuerdos o revivirlos "
-    "\N{INVERTED QUESTION MARK}quieres guardar recuerdos o rememorar alguno?"
-)
 CHAT_ICON = "\N{SPEECH BALLOON}"
 VOICE_ICON = "\N{MICROPHONE}"
 
@@ -61,26 +54,6 @@ def build_messages_html(messages: List[Dict[str, str]], thinking: bool = False) 
     return "\n".join(parts)
 
 
-def build_langchain_messages(messages: List[Dict[str, str]]) -> List:
-    converted = []
-    for message in messages:
-        role = message.get("role", "assistant")
-        content = message.get("content", "")
-        if role == "system":
-            converted.append(SystemMessage(content=content))
-        elif role == "user":
-            converted.append(HumanMessage(content=content))
-        else:
-            converted.append(AIMessage(content=content))
-    return converted
-
-
-def ollama_chat(messages: List[Dict[str, str]], model: str, base_url: str) -> str:
-    chat_model = ChatOllama(model=model, base_url=base_url)
-    response = chat_model.invoke(build_langchain_messages(messages))
-    return response.content.strip()
-
-
 def scroll_chat_to_bottom() -> None:
     components.html(
         """
@@ -116,6 +89,13 @@ tryAttach();
         height=0,
         width=0,
     )
+
+
+@st.cache_resource
+def get_runtime():
+    settings = get_settings()
+    graph = build_memory_graph(settings)
+    return settings, graph
 
 
 st.set_page_config(page_title=APP_TITLE, layout="wide")
@@ -385,16 +365,25 @@ st.markdown(
 
 if "messages" not in st.session_state:
     st.session_state.messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": SYSTEM_CHAT_PROMPT},
         {"role": "assistant", "content": INITIAL_ASSISTANT_MESSAGE},
     ]
 
 if "mode" not in st.session_state:
     st.session_state.mode = "chat"
 
+if "tenant_id" not in st.session_state:
+    st.session_state.tenant_id = "default"
+
 left_col, right_col = st.columns([1, 4], gap="small")
 
 with left_col:
+    tenant_value = st.text_input(
+        "Usuario",
+        value=st.session_state.tenant_id,
+        help="Identificador de usuario para memoria persistente",
+    )
+    st.session_state.tenant_id = tenant_value.strip() or "default"
     if st.button(f"{CHAT_ICON} Modo chat", key="chat", help="Modo chat"):
         st.session_state.mode = "chat"
     if st.button(f"{VOICE_ICON} Modo voz", key="voice", help="Modo voz"):
@@ -414,6 +403,7 @@ with right_col:
                 help="Grabar mensaje de voz",
             )
     else:
+        _, graph = get_runtime()
         chat_placeholder = st.empty()
         chat_placeholder.markdown(
             build_messages_html(st.session_state.messages),
@@ -433,8 +423,10 @@ with right_col:
                 send_clicked = st.form_submit_button("Send", help="Send message")
 
         if send_clicked and user_text.strip():
+            user_message = user_text.strip()
+            history_snapshot = list(st.session_state.messages)
             st.session_state.messages.append(
-                {"role": "user", "content": user_text.strip()}
+                {"role": "user", "content": user_message}
             )
             chat_placeholder.markdown(
                 build_messages_html(st.session_state.messages, thinking=True),
@@ -443,13 +435,13 @@ with right_col:
             scroll_chat_to_bottom()
             with st.spinner("Pensando..."):
                 try:
-                    reply = ollama_chat(
-                        st.session_state.messages, OLLAMA_MODEL, OLLAMA_HOST
+                    reply = run_chat(
+                        graph, st.session_state.tenant_id, user_message, history_snapshot
                     )
                 except Exception as exc:
                     reply = (
-                        "Unable to reach Ollama at "
-                        f"{OLLAMA_HOST}. Is it running? Details: {exc}"
+                        "No se pudo generar la respuesta. "
+                        f"Detalles: {exc}"
                     )
             st.session_state.messages.append({"role": "assistant", "content": reply})
             chat_placeholder.markdown(
