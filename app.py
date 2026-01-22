@@ -1,7 +1,9 @@
 import base64
+import hashlib
 import html
 import os
-from typing import List, Dict
+import time
+from typing import Dict, List, Optional
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -9,6 +11,7 @@ import streamlit.components.v1 as components
 from backend.config import get_settings
 from backend.memory_agent import build_memory_graph, run_chat
 from backend.prompts import INITIAL_ASSISTANT_MESSAGE, SYSTEM_CHAT_PROMPT
+from backend.voice import text_to_speech, transcribe_audio
 
 
 APP_TITLE = "ETERNUM"
@@ -23,6 +26,23 @@ def load_logo_data_uri(path: str) -> str:
     with open(path, "rb") as handle:
         encoded = base64.b64encode(handle.read()).decode("ascii")
     return f"data:image/png;base64,{encoded}"
+
+
+def audio_to_data_uri(audio_bytes: bytes, mime_type: Optional[str]) -> str:
+    encoded = base64.b64encode(audio_bytes).decode("ascii")
+    safe_mime = mime_type or "audio/mpeg"
+    return f"data:{safe_mime};base64,{encoded}"
+
+
+def log_voice_debug(message: str) -> None:
+    timestamp = time.strftime("%H:%M:%S")
+    st.session_state.voice_debug.append(f"{timestamp} - {message}")
+
+
+def clear_voice_autoplay_flags() -> None:
+    for message in st.session_state.voice_messages:
+        if message.get("autoplay"):
+            message["autoplay"] = False
 
 
 def build_messages_html(messages: List[Dict[str, str]], thinking: bool = False) -> str:
@@ -43,11 +63,44 @@ def build_messages_html(messages: List[Dict[str, str]], thinking: bool = False) 
             f'<div class="msg-content">{safe}</div>'
             f"</div>"
         )
-    if thinking:
+    parts.append("</div>")
+    return "\n".join(parts)
+
+
+def build_voice_messages_html(
+    messages: List[Dict[str, str]], thinking: bool = False
+) -> str:
+    if not messages and not thinking:
+        return '<div class="chat-window"><div class="chat-empty">No messages yet.</div></div>'
+
+    parts = ['<div class="chat-window voice-chat">']
+    for message in messages:
+        role = message.get("role", "assistant")
+        if role == "system":
+            continue
+        label = "YOU" if role == "user" else APP_TITLE
+        transcript = html.escape(message.get("transcript", "") or "").replace(
+            "\n", "<br>"
+        )
+        audio_uri = message.get("audio_uri", "")
+        autoplay_attr = " autoplay" if message.get("autoplay") else ""
+        css_class = "msg user" if role == "user" else "msg assistant"
+        audio_tag = ""
+        if audio_uri:
+            audio_tag = (
+                f'<audio class="voice-audio" controls preload="metadata"{autoplay_attr} '
+                f'src="{audio_uri}"></audio>'
+            )
+        transcript_tag = (
+            f'<div class="msg-transcript">{transcript}</div>'
+            if transcript
+            else ""
+        )
+        content = f'<div class="voice-stack">{audio_tag}{transcript_tag}</div>'
         parts.append(
-            f'<div class="msg assistant thinking">'
-            f'<div class="msg-role">{APP_TITLE}</div>'
-            f'<div class="msg-content">Pensando</div>'
+            f'<div class="{css_class}">'
+            f'<div class="msg-role">{label}</div>'
+            f'<div class="msg-content">{content}</div>'
             f"</div>"
         )
     parts.append("</div>")
@@ -243,6 +296,29 @@ button[title="Send message"]:active {
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03);
 }
 
+.voice-chat .msg-content {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.voice-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.voice-audio {
+  width: 240px;
+}
+
+.msg-transcript {
+  font-size: 12px;
+  font-family: "Share Tech Mono", monospace;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
 .chat-empty {
   font-family: "Share Tech Mono", monospace;
   color: var(--muted);
@@ -336,6 +412,19 @@ div[data-testid="stForm"] form {
   padding: 0;
 }
 
+div[data-testid="stAudioInput"] {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--panel-border);
+  border-radius: 18px;
+  background: rgba(11, 12, 16, 0.75);
+}
+
+div[data-testid="stAudioInput"] label {
+  font-family: "Share Tech Mono", monospace;
+  color: var(--muted);
+}
+
 .mode-pill {
   margin-top: 16px;
   padding: 8px 12px;
@@ -369,6 +458,15 @@ if "messages" not in st.session_state:
         {"role": "assistant", "content": INITIAL_ASSISTANT_MESSAGE},
     ]
 
+if "voice_messages" not in st.session_state:
+    st.session_state.voice_messages = []
+
+if "last_audio_hash" not in st.session_state:
+    st.session_state.last_audio_hash = None
+
+if "voice_debug" not in st.session_state:
+    st.session_state.voice_debug = []
+
 if "mode" not in st.session_state:
     st.session_state.mode = "chat"
 
@@ -395,13 +493,131 @@ with left_col:
 
 with right_col:
     if st.session_state.mode == "voice":
-        center_col = st.columns([1, 2, 1], gap="small")[1]
-        with center_col:
-            st.button(
-                f"{VOICE_ICON} Grabar mensaje de voz",
-                key="voice-record",
-                help="Grabar mensaje de voz",
+        settings, graph = get_runtime()
+        clear_voice_autoplay_flags()
+        voice_placeholder = st.empty()
+        voice_placeholder.markdown(
+            build_voice_messages_html(st.session_state.voice_messages),
+            unsafe_allow_html=True,
+        )
+        scroll_chat_to_bottom()
+
+        if not settings.elevenlabs_api_key:
+            st.warning(
+                f"Configura ELEVENLABS_API_KEY en tu .env para transcribir y sintetizar. es {settings.elevenlabs_api_key}"
             )
+        if not settings.elevenlabs_voice_id:
+            st.warning(
+                f"Configura ELEVENLABS_VOICE_ID en tu .env para generar voz. {settings.qdrant_api_key}"
+            )
+
+        audio_input = st.audio_input(
+            "Grabar mensaje de voz",
+            key="voice-input",
+        )
+
+        if audio_input is not None:
+            audio_bytes = audio_input.getvalue()
+            if audio_bytes:
+                audio_hash = hashlib.sha256(audio_bytes).hexdigest()
+                if audio_hash != st.session_state.last_audio_hash:
+                    st.session_state.last_audio_hash = audio_hash
+                    user_audio_uri = audio_to_data_uri(
+                        audio_bytes, audio_input.type
+                    )
+                    st.session_state.voice_messages.append(
+                        {
+                            "role": "user",
+                            "transcript": "",
+                            "audio_uri": user_audio_uri,
+                            "autoplay": False,
+                        }
+                    )
+                    voice_placeholder.markdown(
+                        build_voice_messages_html(
+                            st.session_state.voice_messages, thinking=True
+                        ),
+                        unsafe_allow_html=True,
+                    )
+                    scroll_chat_to_bottom()
+
+                    transcript = ""
+                    if settings.elevenlabs_api_key:
+                        with st.spinner("Transcribiendo audio..."):
+                            try:
+                                transcript = transcribe_audio(
+                                    settings, audio_bytes, audio_input.type
+                                )
+                            except Exception as exc:
+                                st.error(
+                                    f"No se pudo transcribir el audio. Detalles: {exc}"
+                                )
+                    if not transcript:
+                        transcript = "No se pudo transcribir el audio."
+                    st.session_state.voice_messages[-1]["transcript"] = transcript
+                    voice_placeholder.markdown(
+                        build_voice_messages_html(
+                            st.session_state.voice_messages, thinking=True
+                        ),
+                        unsafe_allow_html=True,
+                    )
+                    scroll_chat_to_bottom()
+
+                    reply = ""
+                    if transcript and transcript != "No se pudo transcribir el audio.":
+                        history_snapshot = list(st.session_state.messages)
+                        st.session_state.messages.append(
+                            {"role": "user", "content": transcript}
+                        )
+                        with st.spinner("Pensando..."):
+                            try:
+                                reply = run_chat(
+                                    graph,
+                                    st.session_state.tenant_id,
+                                    transcript,
+                                    history_snapshot,
+                                )
+                            except Exception as exc:
+                                reply = (
+                                    "No se pudo generar la respuesta. "
+                                    f"Detalles: {exc}"
+                                )
+                        st.session_state.messages.append(
+                            {"role": "assistant", "content": reply}
+                        )
+
+                    if reply:
+                        assistant_audio_uri = ""
+                        if settings.elevenlabs_api_key and settings.elevenlabs_voice_id:
+                            with st.spinner("Generando audio..."):
+                                try:
+                                    audio_reply, mime = text_to_speech(
+                                        settings, reply
+                                    )
+                                    assistant_audio_uri = audio_to_data_uri(
+                                        audio_reply, mime
+                                    )
+                                except Exception as exc:
+                                    st.error(
+                                        "No se pudo generar el audio del asistente. "
+                                        f"Detalles: {exc}"
+                                    )
+
+                        for msg in st.session_state.voice_messages:
+                            msg["autoplay"] = False
+                        st.session_state.voice_messages.append(
+                            {
+                                "role": "assistant",
+                                "transcript": reply,
+                                "audio_uri": assistant_audio_uri,
+                                "autoplay": bool(assistant_audio_uri),
+                            }
+                        )
+                        voice_placeholder.markdown(
+                            build_voice_messages_html(st.session_state.voice_messages),
+                            unsafe_allow_html=True,
+                        )
+                        scroll_chat_to_bottom()
     else:
         _, graph = get_runtime()
         chat_placeholder = st.empty()
