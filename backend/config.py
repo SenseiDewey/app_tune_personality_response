@@ -13,6 +13,8 @@ class Settings:
     qdrant_url: str
     qdrant_api_key: Optional[str]
     qdrant_collection: str
+    database_url: Optional[str]
+    auth_users_table: Optional[str]
     llm_provider: str
     llm_api_key: Optional[str]
     openai_api_key: Optional[str]
@@ -30,17 +32,20 @@ class Settings:
 
 
 def get_settings() -> Settings:
-    qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
+    qdrant_url = os.getenv("QDRANT_URL")
     qdrant_api_key = os.getenv("QDRANT_API_KEY") or None
-    qdrant_collection = os.getenv("QDRANT_COLLECTION", "memorias_miguel_urgiles")
+    qdrant_collection = os.getenv("QDRANT_COLLECTION")
+
+    database_url = os.getenv("DATABASE_URL")
+    auth_users_table = os.getenv("AUTH_USERS_TABLE")
 
     llm_provider = os.getenv("LLM_PROVIDER", "ollama").lower().strip()
     llm_api_key = os.getenv("LLM_API_KEY") or None
     openai_api_key = os.getenv("OPENAI_API_KEY") or None
 
-    chat_model = os.getenv("CHAT_MODEL", "gemma3:4b")
-    embedding_model = os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
-    ollama_base_url = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")
+    chat_model = os.getenv("CHAT_MODEL")
+    embedding_model = os.getenv("EMBEDDING_MODEL")
+    ollama_base_url = os.getenv("OLLAMA_HOST")
 
     memory_top_k = int(os.getenv("MEMORY_TOP_K", "5"))
     memory_dedup_threshold = float(os.getenv("MEMORY_DEDUP_THRESHOLD", "0.90"))
@@ -56,6 +61,8 @@ def get_settings() -> Settings:
         qdrant_url=qdrant_url,
         qdrant_api_key=qdrant_api_key,
         qdrant_collection=qdrant_collection,
+        database_url=database_url,
+        auth_users_table=auth_users_table,
         llm_provider=llm_provider,
         llm_api_key=llm_api_key,
         openai_api_key=openai_api_key,

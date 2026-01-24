@@ -1,2 +1,7 @@
 .env
 embeds.ipynb
+.langgraph_api
+langgraph.json
+/backend/debug_graph.py
+agents_pract.ipynb
+/backend/__pycache__

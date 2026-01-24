@@ -5,7 +5,7 @@ SYSTEM_CHAT_PROMPT = (
 )
 
 INITIAL_ASSISTANT_MESSAGE = (
-    "Hola soy Eternum, un asistente que te ayuda a guardar recuerdos o revivirlos "
+    "Hola {name} soy Eternum, un asistente que te ayuda a guardar recuerdos o revivirlos "
     "\N{INVERTED QUESTION MARK}quieres guardar recuerdos o rememorar alguno?"
 )
 

@@ -8,6 +8,7 @@ from typing import Dict, List, Optional
 import streamlit as st
 import streamlit.components.v1 as components
 
+from backend.auth_db import verify_user_credentials
 from backend.config import get_settings
 from backend.memory_agent import build_memory_graph, run_chat
 from backend.prompts import INITIAL_ASSISTANT_MESSAGE, SYSTEM_CHAT_PROMPT
@@ -18,6 +19,7 @@ APP_TITLE = "ETERNUM"
 LOGO_PATH = os.path.join("assets", "logo.png")
 CHAT_ICON = "\N{SPEECH BALLOON}"
 VOICE_ICON = "\N{MICROPHONE}"
+VOICE_INTRO_PATH = os.path.join("assets", "mensaje_inicial.mp3")
 
 
 def load_logo_data_uri(path: str) -> str:
@@ -39,10 +41,99 @@ def log_voice_debug(message: str) -> None:
     st.session_state.voice_debug.append(f"{timestamp} - {message}")
 
 
+def load_audio_bytes(path: str) -> Optional[bytes]:
+    if not os.path.exists(path):
+        return None
+    with open(path, "rb") as handle:
+        return handle.read()
+
+
+def render_login() -> None:
+    settings = get_settings()
+    st.markdown(
+        """
+<style>
+div[data-testid="stForm"] {
+  margin: 6vh auto 0 auto;
+  width: min(440px, 92vw);
+  padding: 24px 22px 26px 22px;
+  border-radius: 18px;
+  border: 1px solid var(--panel-border);
+  background: rgba(11, 12, 16, 0.9);
+  box-shadow: 0 18px 36px rgba(0, 0, 0, 0.4);
+}
+
+div[data-testid="stForm"] form {
+  padding: 0;
+}
+</style>
+""",
+        unsafe_allow_html=True,
+    )
+    with st.form("login-form"):
+        st.markdown(
+            """
+<div class="login-title">Acceso</div>
+<div class="login-subtitle">Identifica tu usuario para iniciar la interfaz.</div>
+""",
+            unsafe_allow_html=True,
+        )
+        username = st.text_input("Usuario", placeholder="Tu usuario")
+        password = st.text_input("Clave", type="password", placeholder="Tu clave")
+        submitted = st.form_submit_button("Ingresar")
+    if not settings.database_url:
+        st.error(
+            "No se encontro la configuracion de la base de datos. "
+            "Define DATABASE_URL para validar usuarios."
+        )
+    if submitted:
+        if not username.strip() or not password:
+            st.session_state.auth_error = "Completa usuario y clave."
+        else:
+            try:
+                if verify_user_credentials(username, password, settings):
+                    st.session_state.authenticated = True
+                    st.session_state.auth_error = ""
+                    st.session_state.login_user = username.strip()
+                    st.session_state.tenant_id = st.session_state.login_user
+                    st.rerun()
+                else:
+                    st.session_state.auth_error = "Credenciales invalidas."
+            except Exception:
+                st.session_state.auth_error = (
+                    "No se pudo validar el acceso con la base de datos."
+                )
+    if st.session_state.auth_error:
+        st.error(st.session_state.auth_error)
+
+
 def clear_voice_autoplay_flags() -> None:
     for message in st.session_state.voice_messages:
         if message.get("autoplay"):
             message["autoplay"] = False
+
+
+def add_voice_intro_message() -> None:
+    if st.session_state.voice_messages:
+        return
+    audio_bytes = load_audio_bytes(VOICE_INTRO_PATH)
+    if not audio_bytes:
+        return
+    st.session_state.voice_messages.append(
+        {
+            "role": "assistant",
+            "transcript": "",
+            "audio_uri": audio_to_data_uri(audio_bytes, "audio/mpeg"),
+            "autoplay": True,
+        }
+    )
+
+
+def build_initial_message(user_name: str) -> str:
+    name = user_name.strip() if user_name else ""
+    if not name:
+        name = "amigo"
+    return INITIAL_ASSISTANT_MESSAGE.format(name=name)
 
 
 def build_messages_html(messages: List[Dict[str, str]], thinking: bool = False) -> str:
@@ -437,6 +528,20 @@ div[data-testid="stAudioInput"] label {
   text-align: center;
   color: var(--accent);
 }
+
+.login-title {
+  font-family: "Oxanium", sans-serif;
+  font-size: 20px;
+  letter-spacing: 4px;
+  margin-bottom: 6px;
+}
+
+.login-subtitle {
+  font-family: "Share Tech Mono", monospace;
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 16px;
+}
 </style>
 """,
     unsafe_allow_html=True,
@@ -452,10 +557,26 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+
+if "auth_error" not in st.session_state:
+    st.session_state.auth_error = ""
+
+if "login_user" not in st.session_state:
+    st.session_state.login_user = ""
+
+if not st.session_state.authenticated:
+    render_login()
+    st.stop()
+
 if "messages" not in st.session_state:
     st.session_state.messages = [
         {"role": "system", "content": SYSTEM_CHAT_PROMPT},
-        {"role": "assistant", "content": INITIAL_ASSISTANT_MESSAGE},
+        {
+            "role": "assistant",
+            "content": build_initial_message(st.session_state.login_user),
+        },
     ]
 
 if "voice_messages" not in st.session_state:
@@ -473,15 +594,12 @@ if "mode" not in st.session_state:
 if "tenant_id" not in st.session_state:
     st.session_state.tenant_id = "default"
 
+if st.session_state.authenticated and st.session_state.login_user:
+    st.session_state.tenant_id = st.session_state.login_user
+
 left_col, right_col = st.columns([1, 4], gap="small")
 
 with left_col:
-    tenant_value = st.text_input(
-        "Usuario",
-        value=st.session_state.tenant_id,
-        help="Identificador de usuario para memoria persistente",
-    )
-    st.session_state.tenant_id = tenant_value.strip() or "default"
     if st.button(f"{CHAT_ICON} Modo chat", key="chat", help="Modo chat"):
         st.session_state.mode = "chat"
     if st.button(f"{VOICE_ICON} Modo voz", key="voice", help="Modo voz"):
@@ -490,11 +608,19 @@ with left_col:
         f'<div class="mode-pill">Modo: {st.session_state.mode}</div>',
         unsafe_allow_html=True,
     )
+    st.markdown('<div style="height: 300px;"></div>', unsafe_allow_html=True)
+    if st.button("Cerrar sesión"):
+        st.session_state.authenticated = False
+        st.session_state.auth_error = ""
+        st.session_state.login_user = ""
+        st.session_state.tenant_id = "default"
+        st.rerun()
 
 with right_col:
     if st.session_state.mode == "voice":
         settings, graph = get_runtime()
         clear_voice_autoplay_flags()
+        add_voice_intro_message()
         voice_placeholder = st.empty()
         voice_placeholder.markdown(
             build_voice_messages_html(st.session_state.voice_messages),
