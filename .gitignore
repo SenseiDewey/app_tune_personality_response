@@ -4,4 +4,10 @@ embeds.ipynb
 langgraph.json
 /backend/debug_graph.py
 agents_pract.ipynb
-/backend/__pycache__
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.cpython-*
+backend/__pycache__/
+backend/**/__pycache__/

@@ -592,7 +592,7 @@ if "mode" not in st.session_state:
     st.session_state.mode = "chat"
 
 if "tenant_id" not in st.session_state:
-    st.session_state.tenant_id = "default"
+    st.session_state.tenant_id = ""
 
 if st.session_state.authenticated and st.session_state.login_user:
     st.session_state.tenant_id = st.session_state.login_user
@@ -613,7 +613,7 @@ with left_col:
         st.session_state.authenticated = False
         st.session_state.auth_error = ""
         st.session_state.login_user = ""
-        st.session_state.tenant_id = "default"
+        st.session_state.tenant_id = ""
         st.rerun()
 
 with right_col:
@@ -699,7 +699,7 @@ with right_col:
                             try:
                                 reply = run_chat(
                                     graph,
-                                    st.session_state.tenant_id,
+                                    st.session_state.login_user,
                                     transcript,
                                     history_snapshot,
                                 )
@@ -778,7 +778,10 @@ with right_col:
             with st.spinner("Pensando..."):
                 try:
                     reply = run_chat(
-                        graph, st.session_state.tenant_id, user_message, history_snapshot
+                        graph,
+                        st.session_state.login_user,
+                        user_message,
+                        history_snapshot,
                     )
                 except Exception as exc:
                     reply = (

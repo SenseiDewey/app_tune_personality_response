@@ -1,3 +1,4 @@
+import re
 from typing import Any, Dict, List, Optional, TypedDict
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -13,6 +14,10 @@ from backend.prompts import (
 )
 from backend.qdrant_store import QdrantStore
 from backend.utils import extract_json, new_uuid, trim_chat_history, utc_now_iso
+
+
+_CROSS_USER_REFUSAL = "No puedo acceder a memorias de otros usuarios."
+_SELF_REFERENCES = {"mi", "mis", "mio", "mia", "mios", "mias", "yo"}
 
 
 class ChatState(TypedDict):
@@ -46,6 +51,30 @@ def _messages_from_history(history: List[Dict[str, str]]) -> List:
         elif role == "assistant":
             messages.append(AIMessage(content=content))
     return messages
+
+
+def _is_cross_user_request(user_message: str, tenant_id: str) -> bool:
+    if not user_message or not tenant_id:
+        return False
+    message = user_message.lower()
+    if "otro usuario" in message or "otra persona" in message:
+        return True
+    patterns = [
+        r"(?:memorias|recuerdos)\s+de\s+([\w.-]+)",
+        r"de\s+usuario\s+([\w.-]+)",
+        r"del\s+usuario\s+([\w.-]+)",
+        r"\busuario\s+([\w.-]+)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, message)
+        if not match:
+            continue
+        target = match.group(1).strip()
+        if not target or target in _SELF_REFERENCES:
+            continue
+        if target != tenant_id.lower():
+            return True
+    return False
 
 
 def build_memory_graph(settings: Settings):
@@ -155,6 +184,8 @@ def run_chat(
     user_message: str,
     chat_history: List[Dict[str, str]],
 ) -> str:
+    if _is_cross_user_request(user_message, tenant_id):
+        return _CROSS_USER_REFUSAL
     result = graph.invoke(
         {
             "tenant_id": tenant_id,
