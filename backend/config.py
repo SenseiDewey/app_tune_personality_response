@@ -53,8 +53,8 @@ def get_settings() -> Settings:
 
     elevenlabs_api_key = os.getenv("ELEVENLABS_API_KEY") or None
     elevenlabs_voice_id = os.getenv("ELEVENLABS_VOICE_ID") or None
-    elevenlabs_tts_model = os.getenv("ELEVENLABS_TTS_MODEL", "eleven_multilingual_v2")
-    elevenlabs_stt_model = os.getenv("ELEVENLABS_STT_MODEL", "scribe_v1")
+    elevenlabs_tts_model = os.getenv("ELEVENLABS_TTS_MODEL")
+    elevenlabs_stt_model = os.getenv("ELEVENLABS_STT_MODEL")
     elevenlabs_output_format = os.getenv("ELEVENLABS_OUTPUT_FORMAT") or None
 
     return Settings(

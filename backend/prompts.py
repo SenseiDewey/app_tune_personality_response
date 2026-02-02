@@ -10,22 +10,24 @@ INITIAL_ASSISTANT_MESSAGE = (
 )
 
 MEMORY_DECIDER_SYSTEM_PROMPT = (
-    "Eres un clasificador de memoria. Decide si el intercambio contiene "
+    "Eres un clasificador de memoria. Decide si el MENSAJE DEL USUARIO contiene "
     "informacion estable y util para el futuro. Guarda solo preferencias, "
-    "perfil no sensible, proyectos persistentes o facts operativos. "
-    "No guardes datos sensibles (salud, politica, religion), ni estados "
-    "temporales, ni detalles efimeros. "
+    "proyectos persistentes o facts operativos. "
+    "No guardes estados temporales, ni detalles efimeros. "
+    "Ignora el contexto previo, recuerdos ya guardados o respuestas del asistente. "
+    "Si el usuario no menciona explicitamente el hecho en este turno, no lo guardes. "
+    "Para recuperar recuerdos es importante que guardes los recuerdos de forma que luego se pueda buscar semanticamente "
+    "agregando detalles relevantes de eventos como por ejemplo el usuario mencionó que: 'recuerdo del usuario'."
     "Tu salida debe ser SOLO JSON valido."
 )
 
 MEMORY_DECIDER_USER_PROMPT = (
-    "Analiza el intercambio y responde con JSON valido.\n"
+    "Analiza el mensaje del usuario y responde con JSON valido.\n"
     "Esquema:\n"
     '{{ "should_store": true|false, "memory": {{ "memory_type": "preference|profile|project|fact", '
     '"text": "idea atomica y normalizada", "importance": 1-5 }} }}\n'
     'Si no hay memoria, responde: {{"should_store": false}}\n'
-    "Intercambio:\n"
+    "Mensaje:\n"
     "Usuario: {user_message}\n"
-    "Asistente: {assistant_answer}\n"
     "JSON:"
 )

@@ -24,6 +24,7 @@ class ChatState(TypedDict):
     tenant_id: str
     user_message: str
     chat_history: List[Dict[str, str]]
+    system_prompt: str
     retrieved_memories: List[Dict[str, Any]]
     assistant_answer: str
     memory_decision: Optional[MemoryDecision]
@@ -39,6 +40,15 @@ def _format_memories(memories: List[Dict[str, Any]]) -> str:
         text = memory.get("text", "")
         lines.append(f"- ({memory_type}, importance {importance}) {text}")
     return "\n".join(lines)
+
+
+def _normalize_text(text: str) -> str:
+    if not text:
+        return ""
+    cleaned = text.lower().strip()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    cleaned = re.sub(r"[^\w\s]", "", cleaned)
+    return cleaned
 
 
 def _messages_from_history(history: List[Dict[str, str]]) -> List:
@@ -106,7 +116,8 @@ def build_memory_graph(settings: Settings):
         history = trim_chat_history(
             state.get("chat_history", []), settings.history_max_messages
         )
-        messages = [SystemMessage(content=SYSTEM_CHAT_PROMPT)]
+        system_prompt = state.get("system_prompt") or SYSTEM_CHAT_PROMPT
+        messages = [SystemMessage(content=system_prompt)]
         memory_context = _format_memories(state.get("retrieved_memories", []))
         if memory_context:
             messages.append(SystemMessage(content=memory_context))
@@ -118,7 +129,6 @@ def build_memory_graph(settings: Settings):
     def decide_memory(state: ChatState) -> Dict[str, Any]:
         prompt = MEMORY_DECIDER_USER_PROMPT.format(
             user_message=state["user_message"],
-            assistant_answer=state.get("assistant_answer", ""),
         )
         response = chat_model.invoke(
             [
@@ -142,10 +152,16 @@ def build_memory_graph(settings: Settings):
         if not decision or not decision.should_store or not decision.memory:
             return {}
         candidate = decision.memory
+        candidate_text_norm = _normalize_text(candidate.text)
+        if not candidate_text_norm:
+            return {}
+        retrieved = state.get("retrieved_memories", [])
+        for memory in retrieved:
+            existing_norm = _normalize_text(memory.get("text", ""))
+            if existing_norm and existing_norm == candidate_text_norm:
+                return {}
         vector = embeddings.embed_query(candidate.text)
-        similar = store.search_similar(
-            vector, state["tenant_id"], candidate.memory_type, limit=3
-        )
+        similar = store.search(vector, state["tenant_id"], settings.memory_top_k)
         for match in similar:
             if match.score is not None and match.score >= settings.memory_dedup_threshold:
                 # Skip near-duplicates; update strategy can be added later.
@@ -183,14 +199,17 @@ def run_chat(
     tenant_id: str,
     user_message: str,
     chat_history: List[Dict[str, str]],
+    system_prompt: Optional[str] = None,
 ) -> str:
     if _is_cross_user_request(user_message, tenant_id):
         return _CROSS_USER_REFUSAL
+    prompt = system_prompt or SYSTEM_CHAT_PROMPT
     result = graph.invoke(
         {
             "tenant_id": tenant_id,
             "user_message": user_message,
             "chat_history": chat_history,
+            "system_prompt": prompt,
         }
     )
     return result.get("assistant_answer", "").strip()

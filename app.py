@@ -20,6 +20,25 @@ LOGO_PATH = os.path.join("assets", "logo.png")
 CHAT_ICON = "\N{SPEECH BALLOON}"
 VOICE_ICON = "\N{MICROPHONE}"
 VOICE_INTRO_PATH = os.path.join("assets", "mensaje_inicial.mp3")
+VOICE_TAGS_CATALOG = (
+    "[laughs], [laughs harder], [starts laughing], [wheezing]\n"
+    "[whispers]\n"
+    "[sighs], [exhales]\n"
+    "[sarcastic], [curious], [excited], [crying], [snorts], [mischievously]"
+)
+VOICE_MODE_INSTRUCTIONS = (
+    "Modo actual: voz. "
+    "Puedes usar etiquetas de expresion vocal y emocion compatibles con ElevenLabs. "
+    "Usa SOLO estas etiquetas:\n"
+    f"{VOICE_TAGS_CATALOG}\n"
+    "Usalas solo cuando aporten valor y, de ser posible, una etiqueta al inicio "
+    "de la frase. No inventes etiquetas nuevas ni las uses en modo texto. "
+    "Ejemplo: [laughs] Eres en realidad muy gracioso."
+)
+TEXT_MODE_INSTRUCTIONS = (
+    "Modo actual: texto. "
+    "No uses etiquetas de voz o emocion del catalogo (por ejemplo [laughs])."
+)
 
 
 def load_logo_data_uri(path: str) -> str:
@@ -34,6 +53,54 @@ def audio_to_data_uri(audio_bytes: bytes, mime_type: Optional[str]) -> str:
     encoded = base64.b64encode(audio_bytes).decode("ascii")
     safe_mime = mime_type or "audio/mpeg"
     return f"data:{safe_mime};base64,{encoded}"
+
+
+def build_system_prompt(mode: str) -> str:
+    if mode == "voice":
+        return f"{SYSTEM_CHAT_PROMPT}\n\n{VOICE_MODE_INSTRUCTIONS}"
+    return f"{SYSTEM_CHAT_PROMPT}\n\n{TEXT_MODE_INSTRUCTIONS}"
+
+
+def initialize_chat_state(user_name: str) -> None:
+    st.session_state.messages = [
+        {"role": "system", "content": build_system_prompt(st.session_state.mode)},
+        {"role": "assistant", "content": build_initial_message(user_name)},
+    ]
+    st.session_state.voice_messages = []
+    st.session_state.last_audio_hash = None
+    st.session_state.voice_debug = []
+
+
+def ensure_chat_state() -> None:
+    user_name = st.session_state.login_user
+    if not user_name:
+        return
+    if (
+        st.session_state.get("chat_owner") != user_name
+        or "messages" not in st.session_state
+    ):
+        st.session_state.chat_owner = user_name
+        initialize_chat_state(user_name)
+
+
+def sync_system_prompt_for_mode() -> None:
+    if "messages" not in st.session_state or not st.session_state.messages:
+        return
+    if st.session_state.messages[0].get("role") == "system":
+        st.session_state.messages[0]["content"] = build_system_prompt(
+            st.session_state.mode
+        )
+
+
+def clear_chat_state() -> None:
+    for key in (
+        "messages",
+        "voice_messages",
+        "last_audio_hash",
+        "voice_debug",
+        "chat_owner",
+    ):
+        st.session_state.pop(key, None)
 
 
 def log_voice_debug(message: str) -> None:
@@ -228,6 +295,40 @@ const tryAttach = () => {
   }
 };
 tryAttach();
+</script>
+""",
+        height=0,
+        width=0,
+    )
+
+
+def attach_chat_input_autoresize() -> None:
+    components.html(
+        """
+<script>
+const parentDoc = window.parent.document;
+const resizeTextarea = (textarea) => {
+  textarea.style.height = "auto";
+  textarea.style.height = `${textarea.scrollHeight}px`;
+};
+const attachAutoResize = () => {
+  const textarea = parentDoc.querySelector(
+    "div[data-testid='stTextArea'] textarea"
+  );
+  if (!textarea) {
+    requestAnimationFrame(attachAutoResize);
+    return;
+  }
+  if (textarea.dataset.autoresizeAttached === "true") {
+    resizeTextarea(textarea);
+    return;
+  }
+  textarea.dataset.autoresizeAttached = "true";
+  textarea.addEventListener("input", () => resizeTextarea(textarea));
+  window.addEventListener("resize", () => resizeTextarea(textarea));
+  resizeTextarea(textarea);
+};
+attachAutoResize();
 </script>
 """,
         height=0,
@@ -490,6 +591,24 @@ div[data-testid="stTextInput"] input:focus {
   box-shadow: 0 0 0 2px rgba(240, 165, 0, 0.15);
 }
 
+div[data-testid="stTextArea"] textarea {
+  background: rgba(10, 12, 16, 0.9);
+  border: 1px solid var(--panel-border);
+  color: var(--text);
+  border-radius: 16px;
+  min-height: 56px;
+  padding: 12px 18px;
+  font-family: "Share Tech Mono", monospace;
+  line-height: 1.5;
+  resize: vertical;
+  overflow: hidden;
+}
+
+div[data-testid="stTextArea"] textarea:focus {
+  border-color: rgba(240, 165, 0, 0.8);
+  box-shadow: 0 0 0 2px rgba(240, 165, 0, 0.15);
+}
+
 div[data-testid="stForm"] {
   margin-top: 18px;
   padding: 14px 16px 12px 16px;
@@ -570,26 +689,11 @@ if not st.session_state.authenticated:
     render_login()
     st.stop()
 
-if "messages" not in st.session_state:
-    st.session_state.messages = [
-        {"role": "system", "content": SYSTEM_CHAT_PROMPT},
-        {
-            "role": "assistant",
-            "content": build_initial_message(st.session_state.login_user),
-        },
-    ]
-
-if "voice_messages" not in st.session_state:
-    st.session_state.voice_messages = []
-
-if "last_audio_hash" not in st.session_state:
-    st.session_state.last_audio_hash = None
-
-if "voice_debug" not in st.session_state:
-    st.session_state.voice_debug = []
-
 if "mode" not in st.session_state:
     st.session_state.mode = "chat"
+
+if "chat_owner" not in st.session_state:
+    st.session_state.chat_owner = ""
 
 if "tenant_id" not in st.session_state:
     st.session_state.tenant_id = ""
@@ -597,19 +701,25 @@ if "tenant_id" not in st.session_state:
 if st.session_state.authenticated and st.session_state.login_user:
     st.session_state.tenant_id = st.session_state.login_user
 
+ensure_chat_state()
+sync_system_prompt_for_mode()
+
 left_col, right_col = st.columns([1, 4], gap="small")
 
 with left_col:
     if st.button(f"{CHAT_ICON} Modo chat", key="chat", help="Modo chat"):
         st.session_state.mode = "chat"
+        sync_system_prompt_for_mode()
     if st.button(f"{VOICE_ICON} Modo voz", key="voice", help="Modo voz"):
         st.session_state.mode = "voice"
+        sync_system_prompt_for_mode()
     st.markdown(
         f'<div class="mode-pill">Modo: {st.session_state.mode}</div>',
         unsafe_allow_html=True,
     )
     st.markdown('<div style="height: 300px;"></div>', unsafe_allow_html=True)
     if st.button("Cerrar sesión"):
+        clear_chat_state()
         st.session_state.authenticated = False
         st.session_state.auth_error = ""
         st.session_state.login_user = ""
@@ -702,6 +812,9 @@ with right_col:
                                     st.session_state.login_user,
                                     transcript,
                                     history_snapshot,
+                                    system_prompt=build_system_prompt(
+                                        st.session_state.mode
+                                    ),
                                 )
                             except Exception as exc:
                                 reply = (
@@ -756,13 +869,16 @@ with right_col:
         with st.form("chat-form", clear_on_submit=True):
             input_col, send_col = st.columns([8, 1], gap="small")
             with input_col:
-                user_text = st.text_input(
+                user_text = st.text_area(
                     "Message",
                     placeholder="Type your message",
                     label_visibility="collapsed",
+                    height=56,
+                    key="chat-input",
                 )
             with send_col:
                 send_clicked = st.form_submit_button("Send", help="Send message")
+        attach_chat_input_autoresize()
 
         if send_clicked and user_text.strip():
             user_message = user_text.strip()
@@ -782,6 +898,7 @@ with right_col:
                         st.session_state.login_user,
                         user_message,
                         history_snapshot,
+                        system_prompt=build_system_prompt(st.session_state.mode),
                     )
                 except Exception as exc:
                     reply = (
